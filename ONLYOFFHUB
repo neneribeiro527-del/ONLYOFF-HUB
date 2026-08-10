@@ -1,0 +1,516 @@
+-- PAINEL CDT BY RDX E GEMINI
+local success, Rayfield = pcall(function()
+    return loadstring(game:HttpGet('https://raw.githubusercontent.com/shlexware/Rayfield/main/source'))()
+end)
+
+if not success or not Rayfield then
+    Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+end
+
+local Window = Rayfield:CreateWindow({
+    Name = "PAINEL CDT BY RDX E GEMINI",
+    LoadingTitle = "Carregando PAINEL CDT...",
+    LoadingSubtitle = "por RDX & Gemini",
+    ConfigurationSaving = {Enabled = false},
+    Discord = {Enabled = false},
+    KeySystem = false,
+    Theme = "Amethyst" -- Tema Roxo e Preto
+})
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local Plr = Players.LocalPlayer
+
+--------------------------------------------------------------------------------
+-- SISTEMA DE PROTEÇÃO (APENAS O DONO PODE MUDAR O NICK / CONFIGURAR)
+--------------------------------------------------------------------------------
+-- Coloque aqui o seu nome exato do Roblox (ou UserID)
+local DONO_NICK = "ONLYOFF" -- Substitua caso seu nick exato no Roblox seja diferente
+local DONO_ID = 0 -- Opcional: Você pode colocar seu UserId numérico aqui se preferir
+
+local function VerificarPermissaoDono()
+    if Plr.Name == DONO_NICK or (DONO_ID ~= 0 and Plr.UserId == DONO_ID) then
+        return true
+    end
+    return false
+end
+
+-- VARIÁVEIS GLOBAIS
+local Nick, Icon, SelectedFont = Plr.Name, "⚔", Enum.Font.GothamBlack
+local NickSize = 20
+local NickHeight = 2.5
+local NickColor, RGBEnabled, TLRef = Color3.fromRGB(255, 255, 255), false, nil
+local TargetGravity = 196.2
+local ShowNickEnabled = true
+
+-- VARIÁVEIS DE MODIFICAÇÃO DO CARRO
+local CarColor = Color3.fromRGB(255, 255, 255)
+local ExhaustScaleLen = 1
+local ExhaustScaleThick = 1
+local OriginalExhaustSizes = {}
+
+-- TABELA PARA ARMAZENAR ESTADO DA INTERFACE
+local HiddenElements = {}
+
+-- VARIÁVEIS DO CONTADOR DE FPS
+local FPSDisplayEnabled = false
+local FPSLabel = nil
+local FrameCounter = 0
+local LastFPSTime = tick()
+
+--------------------------------------------------------------------------------
+-- 1. NICKNAME NA CABEÇA (BLOQUEADO PARA OUTROS)
+--------------------------------------------------------------------------------
+local function UpdateNickDisplay()
+    pcall(function()
+        if not VerificarPermissaoDono() then return end -- Se não for o dono, bloqueia a execução do nick personalizado
+
+        local c = Plr.Character if not c then return end
+        local h = c:FindFirstChild("Head") if not h then return end
+        local b = h:FindFirstChild("RDX_HeadNick")
+        
+        if not ShowNickEnabled then
+            if b then b:Destroy() end
+            return
+        end
+
+        if not b then
+            b = Instance.new("BillboardGui")
+            b.Name = "RDX_HeadNick"
+            b.Adornee = h
+            b.Size = UDim2.new(0, 300, 0, 50)
+            b.AlwaysOnTop = true
+            b.Parent = h
+
+            TLRef = Instance.new("TextLabel")
+            TLRef.Name = "NickText"
+            TLRef.Size = UDim2.new(1, 0, 1, 0)
+            TLRef.BackgroundTransparency = 1
+            TLRef.TextStrokeTransparency = 0
+            TLRef.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+            TLRef.Parent = b
+        else
+            TLRef = b:FindFirstChild("NickText")
+        end
+
+        if b then
+            b.StudsOffset = Vector3.new(0, NickHeight, 0)
+        end
+
+        if TLRef then
+            TLRef.TextSize = NickSize
+            TLRef.Font = SelectedFont
+            if not RGBEnabled then TLRef.TextColor3 = NickColor end
+            TLRef.Text = Nick .. (Icon ~= "" and (" " .. Icon) or "")
+        end
+    end)
+end
+task.spawn(function() while task.wait(1) do UpdateNickDisplay() end end)
+
+--------------------------------------------------------------------------------
+-- 2. OBTER VEÍCULO
+--------------------------------------------------------------------------------
+local function GetCar()
+    local c = Plr.Character if not c then return nil end
+    local hum = c:FindFirstChildOfClass("Humanoid") if not hum or not hum.SeatPart then return nil end
+    local seat = hum.SeatPart
+    local model = seat:FindFirstAncestorOfClass("Model")
+    while model and model.Parent and model.Parent:IsA("Model") and model.Parent ~= Workspace do
+        model = model.Parent
+    end
+    return model, seat
+end
+
+--------------------------------------------------------------------------------
+-- 3. MODIFICAÇÕES DO CARRO
+--------------------------------------------------------------------------------
+local function ApplyCarColor()
+    pcall(function()
+        local car, _ = GetCar()
+        if not car then return end
+        for _, part in ipairs(car:GetDescendants()) do
+            if part:IsA("BasePart") and not (part.Name:lower():find("wheel") or part.Name:lower():find("roda") or part.Name:lower():find("glass") or part.Name:lower():find("vidro")) then
+                part.Color = CarColor
+            end
+        end
+    end)
+end
+
+local function ApplyExhaustMod()
+    pcall(function()
+        local car, _ = GetCar()
+        if not car then return end
+        for _, part in ipairs(car:GetDescendants()) do
+            if part:IsA("BasePart") and (part.Name:lower():find("exhaust") or part.Name:lower():find("escapamento") or part.Name:lower():find("pipe")) then
+                if not OriginalExhaustSizes[part] then
+                    OriginalExhaustSizes[part] = part.Size
+                end
+                local baseSize = OriginalExhaustSizes[part]
+                part.Size = Vector3.new(baseSize.X * ExhaustScaleThick, baseSize.Y * ExhaustScaleThick, baseSize.Z * ExhaustScaleLen)
+            end
+        end
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 4. OCULTAR / EXIBIR INTERFACE (MODO CLEAN)
+--------------------------------------------------------------------------------
+local function IsDriveControl(instance)
+    local n = instance.Name:lower()
+    local keywords = {
+        "touch", "mobile", "control", "drive", "vehicle", "carcontrol",
+        "brake", "freio", "handbrake", "accel", "gas", "pedal", "steer", "steering",
+        "arrow", "joystick", "thumbstick", "seat", "exit", "enter", "rayfield", "rdx", "fps"
+    }
+    for _, kw in ipairs(keywords) do
+        if n:find(kw) then
+            return true
+        end
+    end
+    return false
+end
+
+local function ToggleCleanHUD(state)
+    pcall(function()
+        local pgui = Plr:FindFirstChild("PlayerGui")
+        if not pgui then return end
+
+        if state then
+            HiddenElements = {}
+            for _, gui in ipairs(pgui:GetChildren()) do
+                if gui:IsA("ScreenGui") then
+                    if not IsDriveControl(gui) then
+                        for _, child in ipairs(gui:GetChildren()) do
+                            if child:IsA("GuiObject") and child.Visible and not IsDriveControl(child) then
+                                table.insert(HiddenElements, child)
+                                child.Visible = false
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            for _, elem in ipairs(HiddenElements) do
+                if elem and elem.Parent then
+                    elem.Visible = true
+                end
+            end
+            HiddenElements = {}
+        end
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 5. CONTADOR DE FPS
+--------------------------------------------------------------------------------
+local function ToggleFPSCounter(state)
+    FPSDisplayEnabled = state
+    pcall(function()
+        local guiName = "RDX_FPSCounterGui"
+        local existing = CoreGui:FindFirstChild(guiName) or Plr.PlayerGui:FindFirstChild(guiName)
+        
+        if state then
+            if not existing then
+                local sg = Instance.new("ScreenGui")
+                sg.Name = guiName
+                sg.ResetOnSpawn = false
+                sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+                sg.Parent = Plr.PlayerGui
+
+                local frame = Instance.new("Frame")
+                frame.Name = "FPSFrame"
+                frame.Size = UDim2.new(0, 110, 0, 32)
+                frame.Position = UDim2.new(0, 15, 0, 15)
+                frame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+                frame.BackgroundTransparency = 0.3
+                frame.BorderSizePixel = 0
+                frame.Parent = sg
+
+                local corner = Instance.new("UICorner")
+                corner.CornerRadius = UDim.new(0, 8)
+                corner.Parent = frame
+
+                local stroke = Instance.new("UIStroke")
+                stroke.Color = Color3.fromRGB(0, 255, 127)
+                stroke.Thickness = 1.5
+                stroke.Parent = frame
+
+                local label = Instance.new("TextLabel")
+                label.Name = "FPSText"
+                label.Size = UDim2.new(1, 0, 1, 0)
+                label.BackgroundTransparency = 1
+                label.Font = Enum.Font.GothamBold
+                label.TextSize = 18
+                label.TextColor3 = Color3.fromRGB(0, 255, 127)
+                label.Text = "FPS: --"
+                label.Parent = frame
+
+                FPSLabel = label
+            end
+        else
+            if existing then
+                existing:Destroy()
+            end
+            FPSLabel = nil
+        end
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 6. ANTI-LAG COMPLETO
+--------------------------------------------------------------------------------
+local function ToggleFPSBoost(state)
+    pcall(function()
+        if state then
+            Lighting.GlobalShadows = false
+            Lighting.FogEnd = 9e9
+            for _, v in ipairs(Lighting:GetChildren()) do
+                if v:IsA("PostEffect") or v:IsA("Sky") or v:IsA("Atmosphere") or v:IsA("Clouds") then
+                    v:Destroy()
+                end
+            end
+            for _, v in ipairs(Workspace:GetDescendants()) do
+                if v:IsA("BasePart") then
+                    v.Material = Enum.Material.SmoothPlastic
+                    v.Reflectance = 0
+                elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Fire") or v:IsA("Smoke") or v:IsA("Sparkles") then
+                    v.Enabled = false
+                elseif v:IsA("Decal") or v:IsA("Texture") then
+                    v:Destroy()
+                end
+            end
+        end
+    end)
+end
+
+local function ToggleRemoveTreesAndPosts(state)
+    pcall(function()
+        if state then
+            for _, v in ipairs(Workspace:GetDescendants()) do
+                if v:IsA("Model") or v:IsA("BasePart") then
+                    local name = v.Name:lower()
+                    if name:find("tree") or name:find("arvore") or name:find("árvore") or name:find("bush") or name:find("arbusto") or name:find("post") or name:find("poste") or name:find("lightpole") or name:find("plant") or name:find("planta") then
+                        v:Destroy()
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function ToggleLowTextures(state)
+    pcall(function()
+        if state then
+            for _, v in ipairs(Workspace:GetDescendants()) do
+                if v:IsA("MeshPart") then
+                    v.TextureID = ""
+                elseif v:IsA("Decal") or v:IsA("Texture") then
+                    v:Destroy()
+                end
+            end
+        end
+    end)
+end
+
+local function ToggleRemoveParticles(state)
+    pcall(function()
+        if state then
+            for _, v in ipairs(Workspace:GetDescendants()) do
+                if v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Fire") or v:IsA("Smoke") or v:IsA("Sparkles") or v:IsA("Explosion") then
+                    v:Destroy()
+                end
+            end
+        end
+    end)
+end
+
+local function ToggleWhiteScreen(state)
+    pcall(function()
+        local guiName = "RDX_WhiteScreenOptimizer"
+        local existing = CoreGui:FindFirstChild(guiName) or Plr.PlayerGui:FindFirstChild(guiName)
+        if state and not existing then
+            local sg = Instance.new("ScreenGui")
+            sg.Name = guiName
+            sg.IgnoreGuiInset = true
+            sg.ZIndexBehavior = Enum.ZIndexBehavior.Global
+            sg.Parent = Plr.PlayerGui
+            
+            local fr = Instance.new("Frame")
+            fr.Size = UDim2.new(1, 0, 1, 0)
+            fr.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+            fr.Parent = sg
+        elseif not state and existing then
+            existing:Destroy()
+        end
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 7. ABAS DO PAINEL
+--------------------------------------------------------------------------------
+local TVisual = Window:CreateTab("Visual & Nick")
+local THUD = Window:CreateTab("Interface / HUD")
+local TCarMod = Window:CreateTab("Modificação do Carro")
+local TAntiLag = Window:CreateTab("Anti-Lag / FPS")
+local TGravity = Window:CreateTab("Gravidade")
+local TMov = Window:CreateTab("Jogador")
+local TCreditos = Window:CreateTab("Informações")
+
+-- ABA VISUAL & NICK (COM VERIFICAÇÃO DE DONO)
+TVisual:CreateSection("Configuração do Nick na Cabeça (Protegido)")
+TVisual:CreateToggle({Name="Ativar / Desativar Nick na Cabeça", CurrentValue=true, Callback=function(v) 
+    if VerificarPermissaoDono() then
+        ShowNickEnabled = v 
+        UpdateNickDisplay() 
+    else
+        Rayfield:Notify({Title = "Acesso Negado", Content = "Apenas o dono ONLYOFF pode alterar esta opção!", Duration = 3})
+    end
+end})
+
+TVisual:CreateSection("Personalização do Nick")
+TVisual:CreateInput({Name="Texto do Nick", PlaceholderText="Seu Nick...", RemoveTextOnFocusLost=false, Callback=function(t) 
+    if VerificarPermissaoDono() then
+        Nick = t 
+        UpdateNickDisplay() 
+    else
+        Rayfield:Notify({Title = "Acesso Negado", Content = "Apenas o dono ONLYOFF pode alterar o nick!", Duration = 3})
+    end
+end})
+TVisual:CreateDropdown({Name="Símbolos / Emotes", Options={"Nenhum", "⚔", "★", "✝", "⚜", "⚡", "♛", "☣", "☯", "☠"}, CurrentOption={"⚔"}, MultipleOptions=false, Callback=function(o) 
+    if VerificarPermissaoDono() then
+        Icon = (o[1]=="Nenhum" and "" or o[1]) 
+        UpdateNickDisplay() 
+    end
+end})
+TVisual:CreateDropdown({Name="Estilo de Fonte", Options={"GTA / Bold", "Medieval / Clássica", "Futurista", "Pixel / Arcade"}, CurrentOption={"GTA / Bold"}, MultipleOptions=false, Callback=function(o)
+    if VerificarPermissaoDono() then
+        if o[1]:find("GTA") then SelectedFont = Enum.Font.GothamBlack
+        elseif o[1]:find("Medieval") then SelectedFont = Enum.Font.Fantasy
+        elseif o[1]:find("Futurista") then SelectedFont = Enum.Font.SciFi
+        else SelectedFont = Enum.Font.Arcade end
+        UpdateNickDisplay()
+    end
+end})
+TVisual:CreateColorPicker({Name="Cor do Nick", Color=Color3.fromRGB(255,255,255), Callback=function(v) 
+    if VerificarPermissaoDono() then
+        NickColor = v 
+        UpdateNickDisplay() 
+    end
+end})
+
+TVisual:CreateSection("Ajustes de Tamanho e Altura do Nick")
+TVisual:CreateSlider({Name="Tamanho do Texto", Range={10, 50}, Increment=2, CurrentValue=20, Callback=function(v) 
+    if VerificarPermissaoDono() then
+        NickSize = v 
+        UpdateNickDisplay() 
+    end
+end})
+TVisual:CreateSlider({Name="Altura na Cabeça", Range={1, 6}, Increment=0.2, CurrentValue=2.5, Callback=function(v) 
+    if VerificarPermissaoDono() then
+        NickHeight = v 
+        UpdateNickDisplay() 
+    end
+end})
+
+-- ABA INTERFACE / HUD
+THUD:CreateSection("Customização do Painel")
+THUD:CreateDropdown({
+    Name = "Alterar Tema do Painel",
+    Options = {"Amethyst", "Red", "Default", "Amber", "Ocean", "Green", "DarkBlue"},
+    CurrentOption = {"Amethyst"},
+    MultipleOptions = false,
+    Callback = function(o)
+        pcall(function()
+            Window:ChangeTheme(o[1])
+        end)
+    end
+})
+
+THUD:CreateSection("Exibição na Tela")
+THUD:CreateToggle({
+    Name = "Contador de FPS (Canto Esquerdo)",
+    CurrentValue = false,
+    Callback = function(v)
+        ToggleFPSCounter(v)
+    end
+})
+
+THUD:CreateSection("Limpeza de Tela")
+THUD:CreateToggle({
+    Name = "Modo Clean (Manter Apenas Pedais e Direção)",
+    CurrentValue = false,
+    Callback = function(v)
+        ToggleCleanHUD(v)
+    end
+})
+
+-- ABA MODIFICAÇÃO DO CARRO
+TCarMod:CreateSection("Pintura do Carro")
+TCarMod:CreateColorPicker({Name="Cor Principal do Veículo", Color=Color3.fromRGB(255,255,255), Callback=function(v) CarColor=v ApplyCarColor() end})
+
+TCarMod:CreateSection("Ajuste do Escapamento")
+TCarMod:CreateSlider({Name="Comprimento (Aumentar / Diminuir)", Range={0.2, 4}, Increment=0.1, CurrentValue=1, Callback=function(v) ExhaustScaleLen=v ApplyExhaustMod() end})
+TCarMod:CreateSlider({Name="Largura / Grossura", Range={0.2, 3}, Increment=0.1, CurrentValue=1, Callback=function(v) ExhaustScaleThick=v ApplyExhaustMod() end})
+
+-- ABA ANTI-LAG / FPS
+TAntiLag:CreateSection("Otimizações Pesadas de FPS")
+TAntiLag:CreateToggle({Name="Ativar Anti-Lag Geral (Boost Max)", CurrentValue=false, Callback=function(v) ToggleFPSBoost(v) end})
+TAntiLag:CreateToggle({Name="Remover Árvores, Postes e Arbustos", CurrentValue=false, Callback=function(v) ToggleRemoveTreesAndPosts(v) end})
+TAntiLag:CreateToggle({Name="Remover Texturas de Alta Definição", CurrentValue=false, Callback=function(v) ToggleLowTextures(v) end})
+TAntiLag:CreateToggle({Name="Remover Todas as Partículas e Efeitos", CurrentValue=false, Callback=function(v) ToggleRemoveParticles(v) end})
+TAntiLag:CreateToggle({Name="Tela Branca / Modo Desempenho Extremo", CurrentValue=false, Callback=function(v) ToggleWhiteScreen(v) end})
+
+-- ABA GRAVIDADE
+TGravity:CreateSection("Controle de Gravidade")
+TGravity:CreateDropdown({
+    Name = "Selecionar Nível de Gravidade",
+    Options = {"196.2 (Padrão)", "10", "20", "30", "40", "50", "60", "70", "80"},
+    CurrentOption = {"196.2 (Padrão)"},
+    MultipleOptions = false,
+    Callback = function(o)
+        local val = o[1]
+        TargetGravity = (val == "196.2 (Padrão)" and 196.2 or tonumber(val))
+        Workspace.Gravity = TargetGravity
+    end
+})
+
+-- ABA JOGADOR
+TMov:CreateSection("Velocidade do Personagem")
+local SpdE, SpdV = false, 16
+TMov:CreateToggle({Name="Ativar Velocidade", CurrentValue=false, Callback=function(v) SpdE=v end})
+TMov:CreateSlider({Name="Ajustar WalkSpeed", Range={16,300}, Increment=2, CurrentValue=16, Callback=function(v) SpdV=v end})
+
+-- ABA INFORMAÇÕES / CRÉDITOS
+TCreditos:CreateSection("Informações do Criador")
+TCreditos:CreateParagraph({Title = "DONO", Content = "ONLYOFF"})
+TCreditos:CreateParagraph({Title = "REDES SOCIAIS", Content = "SEGUE NO TIK TOK E MANDE IDEIAS DE OPÇÃO PARA O SCRIPT"})
+
+-- LOOPS DE MANUTENÇÃO CONTÍNUA E ATUALIZAÇÃO DO FPS
+RunService.RenderStepped:Connect(function()
+    pcall(function()
+        -- Atualização do FPS
+        if FPSDisplayEnabled and FPSLabel then
+            FrameCounter = FrameCounter + 1
+            local now = tick()
+            if now - LastFPSTime >= 0.5 then
+                local fps = math.floor(FrameCounter / (now - LastFPSTime))
+                FPSLabel.Text = "FPS: " .. tostring(fps)
+                FrameCounter = 0
+                LastFPSTime = now
+            end
+        end
+
+        -- Manutenção da Gravidade
+        if Workspace.Gravity ~= TargetGravity then
+            Workspace.Gravity = TargetGravity
+        end
+
+        -- Manutenção da Velocidade
+        if SpdE and Plr.Character and Plr.Character:FindFirstChildOfClass("Humanoid") then
+            Plr.Character:FindFirstChildOfClass("Humanoid").WalkSpeed = SpdV
+        end
+    end)
+end)
