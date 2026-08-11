@@ -14,7 +14,7 @@ local Window = Rayfield:CreateWindow({
     ConfigurationSaving = {Enabled = false},
     Discord = {Enabled = false},
     KeySystem = false,
-    Theme = "Amethyst" -- Tema Roxo e Preto
+    Theme = "Amethyst"
 })
 
 local Players = game:GetService("Players")
@@ -22,21 +22,9 @@ local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
 local Plr = Players.LocalPlayer
-
---------------------------------------------------------------------------------
--- SISTEMA DE PROTEÇÃO (APENAS O DONO PODE MUDAR O NICK / CONFIGURAR)
---------------------------------------------------------------------------------
--- Coloque aqui o seu nome exato do Roblox (ou UserID)
-local DONO_NICK = "ONLYOFF" -- Substitua caso seu nick exato no Roblox seja diferente
-local DONO_ID = 0 -- Opcional: Você pode colocar seu UserId numérico aqui se preferir
-
-local function VerificarPermissaoDono()
-    if Plr.Name == DONO_NICK or (DONO_ID ~= 0 and Plr.UserId == DONO_ID) then
-        return true
-    end
-    return false
-end
+local Camera = Workspace.CurrentCamera
 
 -- VARIÁVEIS GLOBAIS
 local Nick, Icon, SelectedFont = Plr.Name, "⚔", Enum.Font.GothamBlack
@@ -61,13 +49,43 @@ local FPSLabel = nil
 local FrameCounter = 0
 local LastFPSTime = tick()
 
+-- VARIÁVEIS DE ILUMINAÇÃO ORIGINAL (SHADERS)
+local DefOutdoorAmbient = Lighting.OutdoorAmbient
+local DefFogColor = Lighting.FogColor
+local DefFogStart = Lighting.FogStart
+local DefFogEnd = Lighting.FogEnd
+
+-- VARIÁVEIS DO CONTADOR DE DRIFT ESTILO MTA
+local DriftEnabled = true
+local CurrentDriftScore = 0
+local TotalDriftPoints = 0
+local IsDrifting = false
+local DriftMultiplier = 1
+local LastDriftTime = 0
+local DriftGui = nil
+local DriftLabel = nil
+
+-- VARIÁVEIS DE CÂMERA & GRAVAÇÃO
+local CustomFOVEnabled = false
+local TargetFOV = 70
+local StretchedCamEnabled = false
+local StretchAmount = 1.3
+local FixCamEnabled = false
+local SavedCamCFrame = nil
+
+local FreeCamEnabled = false
+local FreeCamSpeed = 1
+local FreeCamCFrame = CFrame.new()
+local FreeCamFocus = CFrame.new()
+local FreeCamRot = Vector2.new()
+local FreeCamTouchControls = nil
+local FreeCamMoveDir = Vector3.new()
+
 --------------------------------------------------------------------------------
--- 1. NICKNAME NA CABEÇA (BLOQUEADO PARA OUTROS)
+-- 1. NICKNAME NA CABEÇA
 --------------------------------------------------------------------------------
 local function UpdateNickDisplay()
     pcall(function()
-        if not VerificarPermissaoDono() then return end -- Se não for o dono, bloqueia a execução do nick personalizado
-
         local c = Plr.Character if not c then return end
         local h = c:FindFirstChild("Head") if not h then return end
         local b = h:FindFirstChild("RDX_HeadNick")
@@ -114,8 +132,8 @@ task.spawn(function() while task.wait(1) do UpdateNickDisplay() end end)
 -- 2. OBTER VEÍCULO
 --------------------------------------------------------------------------------
 local function GetCar()
-    local c = Plr.Character if not c then return nil end
-    local hum = c:FindFirstChildOfClass("Humanoid") if not hum or not hum.SeatPart then return nil end
+    local c = Plr.Character if not c then return nil, nil end
+    local hum = c:FindFirstChildOfClass("Humanoid") if not hum or not hum.SeatPart then return nil, nil end
     local seat = hum.SeatPart
     local model = seat:FindFirstAncestorOfClass("Model")
     while model and model.Parent and model.Parent:IsA("Model") and model.Parent ~= Workspace do
@@ -125,7 +143,229 @@ local function GetCar()
 end
 
 --------------------------------------------------------------------------------
--- 3. MODIFICAÇÕES DO CARRO
+-- 3. CONTADOR DE DRIFT ESTILO MTA
+--------------------------------------------------------------------------------
+local function CreateDriftUI()
+    pcall(function()
+        local guiName = "RDX_DriftCounterGui"
+        local existing = CoreGui:FindFirstChild(guiName) or Plr.PlayerGui:FindFirstChild(guiName)
+        if existing then existing:Destroy() end
+
+        local sg = Instance.new("ScreenGui")
+        sg.Name = guiName
+        sg.ResetOnSpawn = false
+        sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        sg.Parent = Plr.PlayerGui
+
+        local mainLabel = Instance.new("TextLabel")
+        mainLabel.Name = "DriftMain"
+        mainLabel.Size = UDim2.new(0, 300, 0, 40)
+        mainLabel.Position = UDim2.new(0.5, -150, 0, 60)
+        mainLabel.BackgroundTransparency = 1
+        mainLabel.Font = Enum.Font.GothamBlack
+        mainLabel.TextSize = 22
+        mainLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        mainLabel.TextStrokeTransparency = 0.2
+        mainLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        mainLabel.Text = ""
+        mainLabel.Parent = sg
+
+        DriftGui = sg
+        DriftLabel = mainLabel
+    end)
+end
+
+local function UpdateDriftLogic(dt)
+    if not DriftEnabled then
+        if DriftGui then DriftGui.Enabled = false end
+        return
+    end
+
+    if not DriftGui or not DriftGui.Parent then
+        CreateDriftUI()
+    end
+    DriftGui.Enabled = true
+
+    pcall(function()
+        local car, seat = GetCar()
+        if car and seat then
+            local velocity = seat.AssemblyLinearVelocity
+            local speed = velocity.Magnitude
+            local moveDir = velocity.Unit
+            local lookDir = seat.CFrame.LookVector
+
+            local dot = lookDir:Dot(moveDir)
+            local angle = math.acos(math.clamp(dot, -1, 1)) * (180 / math.pi)
+
+            if speed > 15 and angle > 15 and angle < 160 then
+                IsDrifting = true
+                LastDriftTime = tick()
+
+                if CurrentDriftScore > 8000 then DriftMultiplier = 5
+                elseif CurrentDriftScore > 4000 then DriftMultiplier = 4
+                elseif CurrentDriftScore > 1800 then DriftMultiplier = 3
+                elseif CurrentDriftScore > 500 then DriftMultiplier = 2
+                else DriftMultiplier = 1 end
+
+                local addedPoints = math.floor((angle * (speed / 10)) * dt * 2 * DriftMultiplier)
+                CurrentDriftScore = CurrentDriftScore + addedPoints
+
+                if DriftLabel then
+                    if DriftMultiplier > 1 then
+                        DriftLabel.Text = tostring(CurrentDriftScore) .. "  x" .. tostring(DriftMultiplier)
+                    else
+                        DriftLabel.Text = tostring(CurrentDriftScore)
+                    end
+                end
+            else
+                if IsDrifting and (tick() - LastDriftTime > 1.0) then
+                    IsDrifting = false
+                    TotalDriftPoints = TotalDriftPoints + CurrentDriftScore
+                    CurrentDriftScore = 0
+                    DriftMultiplier = 1
+                    if DriftLabel then DriftLabel.Text = "" end
+                end
+            end
+        else
+            if IsDrifting then
+                IsDrifting = false
+                CurrentDriftScore = 0
+                DriftMultiplier = 1
+            end
+            if DriftLabel then DriftLabel.Text = "" end
+        end
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 4. SISTEMA DE CÂMERA & FREE CAM
+--------------------------------------------------------------------------------
+local function CreateFreeCamMobileControls()
+    pcall(function()
+        local guiName = "RDX_FreeCamMobileControls"
+        local existing = CoreGui:FindFirstChild(guiName) or Plr.PlayerGui:FindFirstChild(guiName)
+        if existing then existing:Destroy() end
+
+        local sg = Instance.new("ScreenGui")
+        sg.Name = guiName
+        sg.ResetOnSpawn = false
+        sg.Parent = Plr.PlayerGui
+
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(0, 160, 0, 160)
+        frame.Position = UDim2.new(0.05, 0, 0.6, 0)
+        frame.BackgroundTransparency = 1
+        frame.Parent = sg
+
+        local function makeBtn(name, text, pos, dir)
+            local btn = Instance.new("TextButton")
+            btn.Name = name
+            btn.Size = UDim2.new(0, 45, 0, 45)
+            btn.Position = pos
+            btn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+            btn.BackgroundTransparency = 0.3
+            btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            btn.Font = Enum.Font.GothamBold
+            btn.TextSize = 16
+            btn.Text = text
+            btn.Parent = frame
+
+            local corner = Instance.new("UICorner")
+            corner.CornerRadius = UDim.new(0, 8)
+            corner.Parent = btn
+
+            btn.MouseButton1Down:Connect(function() FreeCamMoveDir = FreeCamMoveDir + dir end)
+            btn.MouseButton1Up:Connect(function() FreeCamMoveDir = FreeCamMoveDir - dir end)
+        end
+
+        makeBtn("Up", "▲", UDim2.new(0.35, 0, 0, 0), Vector3.new(0, 0, -1))
+        makeBtn("Down", "▼", UDim2.new(0.35, 0, 0.7, 0), Vector3.new(0, 0, 1))
+        makeBtn("Left", "◄", UDim2.new(0, 0, 0.35, 0), Vector3.new(-1, 0, 0))
+        makeBtn("Right", "►", UDim2.new(0.7, 0, 0.35, 0), Vector3.new(1, 0, 0))
+
+        -- Subir / Descer
+        makeBtn("Ascend", "⬆", UDim2.new(0.85, 80, 0.1, 0), Vector3.new(0, 1, 0))
+        makeBtn("Descend", "⬇", UDim2.new(0.85, 80, 0.6, 0), Vector3.new(0, -1, 0))
+
+        FreeCamTouchControls = sg
+    end)
+end
+
+local function ToggleFreeCam(state)
+    FreeCamEnabled = state
+    pcall(function()
+        if state then
+            Camera.CameraType = Enum.CameraType.Scriptable
+            FreeCamCFrame = Camera.CFrame
+            local rx, ry, _ = Camera.CFrame:ToOrientation()
+            FreeCamRot = Vector2.new(rx, ry)
+
+            if UserInputService.TouchEnabled then
+                CreateFreeCamMobileControls()
+            end
+        else
+            Camera.CameraType = Enum.CameraType.Custom
+            if FreeCamTouchControls then
+                FreeCamTouchControls:Destroy()
+                FreeCamTouchControls = nil
+            end
+            FreeCamMoveDir = Vector3.new(0,0,0)
+        end
+    end)
+end
+
+-- Rotação por toque/arraste na tela
+UserInputService.InputChanged:Connect(function(input, gpe)
+    if FreeCamEnabled and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Delta
+            FreeCamRot = FreeCamRot - Vector2.new(delta.Y * 0.005, delta.X * 0.005)
+        end
+    end
+end)
+
+local function UpdateCameraLogic()
+    pcall(function()
+        if FixCamEnabled then
+            Camera.CameraType = Enum.CameraType.Scriptable
+            if SavedCamCFrame then
+                Camera.CFrame = SavedCamCFrame
+            end
+            return
+        end
+
+        if FreeCamEnabled then
+            Camera.CameraType = Enum.CameraType.Scriptable
+            local keyboardDir = Vector3.new()
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then keyboardDir = keyboardDir + Vector3.new(0, 0, -1) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then keyboardDir = keyboardDir + Vector3.new(0, 0, 1) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then keyboardDir = keyboardDir + Vector3.new(-1, 0, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then keyboardDir = keyboardDir + Vector3.new(1, 0, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.E) then keyboardDir = keyboardDir + Vector3.new(0, 1, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Q) then keyboardDir = keyboardDir + Vector3.new(0, -1, 0) end
+
+            local moveVector = keyboardDir + FreeCamMoveDir
+            local rotationCFrame = CFrame.Angles(0, FreeCamRot.Y, 0) * CFrame.Angles(FreeCamRot.X, 0, 0)
+            
+            FreeCamCFrame = FreeCamCFrame + (rotationCFrame:VectorToWorldSpace(moveVector) * FreeCamSpeed)
+            Camera.CFrame = CFrame.new(FreeCamCFrame.Position) * rotationCFrame
+            return
+        end
+
+        -- FOV e Esticador
+        if CustomFOVEnabled or StretchedCamEnabled then
+            local baseFOV = CustomFOVEnabled and TargetFOV or 70
+            if StretchedCamEnabled then
+                Camera.FieldOfView = math.clamp(baseFOV * StretchAmount, 10, 120)
+            else
+                Camera.FieldOfView = baseFOV
+            end
+        end
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 5. MODIFICAÇÕES DO CARRO
 --------------------------------------------------------------------------------
 local function ApplyCarColor()
     pcall(function()
@@ -156,19 +396,17 @@ local function ApplyExhaustMod()
 end
 
 --------------------------------------------------------------------------------
--- 4. OCULTAR / EXIBIR INTERFACE (MODO CLEAN)
+-- 6. OCULTAR / EXIBIR INTERFACE (MODO CLEAN)
 --------------------------------------------------------------------------------
 local function IsDriveControl(instance)
     local n = instance.Name:lower()
     local keywords = {
         "touch", "mobile", "control", "drive", "vehicle", "carcontrol",
         "brake", "freio", "handbrake", "accel", "gas", "pedal", "steer", "steering",
-        "arrow", "joystick", "thumbstick", "seat", "exit", "enter", "rayfield", "rdx", "fps"
+        "arrow", "joystick", "thumbstick", "seat", "exit", "enter", "rayfield", "rdx", "fps", "drift", "freecam"
     }
     for _, kw in ipairs(keywords) do
-        if n:find(kw) then
-            return true
-        end
+        if n:find(kw) then return true end
     end
     return false
 end
@@ -204,7 +442,7 @@ local function ToggleCleanHUD(state)
 end
 
 --------------------------------------------------------------------------------
--- 5. CONTADOR DE FPS
+-- 7. CONTADOR DE FPS
 --------------------------------------------------------------------------------
 local function ToggleFPSCounter(state)
     FPSDisplayEnabled = state
@@ -251,16 +489,14 @@ local function ToggleFPSCounter(state)
                 FPSLabel = label
             end
         else
-            if existing then
-                existing:Destroy()
-            end
+            if existing then existing:Destroy() end
             FPSLabel = nil
         end
     end)
 end
 
 --------------------------------------------------------------------------------
--- 6. ANTI-LAG COMPLETO
+-- 8. ANTI-LAG COMPLETO
 --------------------------------------------------------------------------------
 local function ToggleFPSBoost(state)
     pcall(function()
@@ -268,9 +504,7 @@ local function ToggleFPSBoost(state)
             Lighting.GlobalShadows = false
             Lighting.FogEnd = 9e9
             for _, v in ipairs(Lighting:GetChildren()) do
-                if v:IsA("PostEffect") or v:IsA("Sky") or v:IsA("Atmosphere") or v:IsA("Clouds") then
-                    v:Destroy()
-                end
+                if v:IsA("PostEffect") or v:IsA("Sky") or v:IsA("Atmosphere") or v:IsA("Clouds") then v:Destroy() end
             end
             for _, v in ipairs(Workspace:GetDescendants()) do
                 if v:IsA("BasePart") then
@@ -305,11 +539,8 @@ local function ToggleLowTextures(state)
     pcall(function()
         if state then
             for _, v in ipairs(Workspace:GetDescendants()) do
-                if v:IsA("MeshPart") then
-                    v.TextureID = ""
-                elseif v:IsA("Decal") or v:IsA("Texture") then
-                    v:Destroy()
-                end
+                if v:IsA("MeshPart") then v.TextureID = ""
+                elseif v:IsA("Decal") or v:IsA("Texture") then v:Destroy() end
             end
         end
     end)
@@ -349,71 +580,152 @@ local function ToggleWhiteScreen(state)
 end
 
 --------------------------------------------------------------------------------
--- 7. ABAS DO PAINEL
+-- 9. SHADERS
 --------------------------------------------------------------------------------
+local function ApplyGrayShader(state)
+    pcall(function()
+        local cc = Lighting:FindFirstChild("RDX_GrayCC")
+        if state then
+            Lighting.FogColor = Color3.fromRGB(130, 135, 140)
+            Lighting.FogStart = 20
+            Lighting.FogEnd = 400
+            Lighting.OutdoorAmbient = Color3.fromRGB(100, 100, 105)
+            if not cc then
+                cc = Instance.new("ColorCorrectionEffect")
+                cc.Name = "RDX_GrayCC"
+                cc.Saturation = -0.5
+                cc.TintColor = Color3.fromRGB(180, 185, 190)
+                cc.Parent = Lighting
+            end
+        else
+            Lighting.FogColor = DefFogColor
+            Lighting.FogStart = DefFogStart
+            Lighting.FogEnd = DefFogEnd
+            Lighting.OutdoorAmbient = DefOutdoorAmbient
+            if cc then cc:Destroy() end
+        end
+    end)
+end
+
+local function ApplyPurpleShader(state)
+    pcall(function()
+        local cc = Lighting:FindFirstChild("RDX_PurpleCC")
+        if state then
+            Lighting.FogColor = Color3.fromRGB(140, 90, 190)
+            Lighting.FogStart = 50
+            Lighting.FogEnd = 800
+            Lighting.OutdoorAmbient = Color3.fromRGB(160, 100, 220)
+            if not cc then
+                cc = Instance.new("ColorCorrectionEffect")
+                cc.Name = "RDX_PurpleCC"
+                cc.TintColor = Color3.fromRGB(210, 170, 255)
+                cc.Saturation = 0.2
+                cc.Parent = Lighting
+            end
+        else
+            Lighting.FogColor = DefFogColor
+            Lighting.FogStart = DefFogStart
+            Lighting.FogEnd = DefFogEnd
+            Lighting.OutdoorAmbient = DefOutdoorAmbient
+            if cc then cc:Destroy() end
+        end
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 10. ABAS DO PAINEL RAYFIELD
+--------------------------------------------------------------------------------
+local TCam = Window:CreateTab("Câmera & Gravação")
 local TVisual = Window:CreateTab("Visual & Nick")
 local THUD = Window:CreateTab("Interface / HUD")
+local TDrift = Window:CreateTab("Sistema de Drift")
 local TCarMod = Window:CreateTab("Modificação do Carro")
+local TShaders = Window:CreateTab("Shaders / Céu")
 local TAntiLag = Window:CreateTab("Anti-Lag / FPS")
 local TGravity = Window:CreateTab("Gravidade")
 local TMov = Window:CreateTab("Jogador")
 local TCreditos = Window:CreateTab("Informações")
 
--- ABA VISUAL & NICK (COM VERIFICAÇÃO DE DONO)
-TVisual:CreateSection("Configuração do Nick na Cabeça (Protegido)")
-TVisual:CreateToggle({Name="Ativar / Desativar Nick na Cabeça", CurrentValue=true, Callback=function(v) 
-    if VerificarPermissaoDono() then
-        ShowNickEnabled = v 
-        UpdateNickDisplay() 
-    else
-        Rayfield:Notify({Title = "Acesso Negado", Content = "Apenas o dono ONLYOFF pode alterar esta opção!", Duration = 3})
+-- ABA CÂMERA & GRAVAÇÃO
+TCam:CreateSection("Ajuste de FOV (Campo de Visão)")
+TCam:CreateToggle({
+    Name = "Ativar FOV Personalizado",
+    CurrentValue = false,
+    Callback = function(v)
+        CustomFOVEnabled = v
+        if not v and not StretchedCamEnabled then Camera.FieldOfView = 70 end
     end
-end})
+})
+TCam:CreateSlider({
+    Name = "Ângulo do FOV",
+    Range = {30, 120},
+    Increment = 1,
+    CurrentValue = 70,
+    Callback = function(v) TargetFOV = v end
+})
 
-TVisual:CreateSection("Personalização do Nick")
-TVisual:CreateInput({Name="Texto do Nick", PlaceholderText="Seu Nick...", RemoveTextOnFocusLost=false, Callback=function(t) 
-    if VerificarPermissaoDono() then
-        Nick = t 
-        UpdateNickDisplay() 
-    else
-        Rayfield:Notify({Title = "Acesso Negado", Content = "Apenas o dono ONLYOFF pode alterar o nick!", Duration = 3})
+TCam:CreateSection("Efeito Esticador de Tela (Stretched)")
+TCam:CreateToggle({
+    Name = "Ativar Tela Esticada",
+    CurrentValue = false,
+    Callback = function(v)
+        StretchedCamEnabled = v
+        if not v and not CustomFOVEnabled then Camera.FieldOfView = 70 end
     end
-end})
-TVisual:CreateDropdown({Name="Símbolos / Emotes", Options={"Nenhum", "⚔", "★", "✝", "⚜", "⚡", "♛", "☣", "☯", "☠"}, CurrentOption={"⚔"}, MultipleOptions=false, Callback=function(o) 
-    if VerificarPermissaoDono() then
-        Icon = (o[1]=="Nenhum" and "" or o[1]) 
-        UpdateNickDisplay() 
+})
+TCam:CreateSlider({
+    Name = "Nível do Esticador",
+    Range = {1, 2},
+    Increment = 0.05,
+    CurrentValue = 1.3,
+    Callback = function(v) StretchAmount = v end
+})
+
+TCam:CreateSection("Fix Cam (Travar Câmera)")
+TCam:CreateToggle({
+    Name = "Travar Câmera na Posição Atual",
+    CurrentValue = false,
+    Callback = function(v)
+        FixCamEnabled = v
+        if v then
+            SavedCamCFrame = Camera.CFrame
+        else
+            Camera.CameraType = Enum.CameraType.Custom
+        end
     end
-end})
+})
+
+TCam:CreateSection("Free Cam (Câmera Livre para Vídeos)")
+TCam:CreateToggle({
+    Name = "Ativar Free Cam",
+    CurrentValue = false,
+    Callback = function(v)
+        ToggleFreeCam(v)
+    end
+})
+TCam:CreateSlider({
+    Name = "Velocidade da Free Cam",
+    Range = {0.2, 5},
+    Increment = 0.1,
+    CurrentValue = 1,
+    Callback = function(v) FreeCamSpeed = v end
+})
+
+-- ABA VISUAL & NICK
+TVisual:CreateSection("Configuração do Nick na Cabeça")
+TVisual:CreateToggle({Name="Ativar / Desativar Nick na Cabeça", CurrentValue=true, Callback=function(v) ShowNickEnabled = v UpdateNickDisplay() end})
+TVisual:CreateInput({Name="Texto do Nick", PlaceholderText="Seu Nick...", RemoveTextOnFocusLost=false, Callback=function(t) Nick = t UpdateNickDisplay() end})
+TVisual:CreateDropdown({Name="Símbolos / Emotes", Options={"Nenhum", "⚔", "★", "✝", "⚜", "⚡", "♛", "☣", "☯", "☠"}, CurrentOption={"⚔"}, MultipleOptions=false, Callback=function(o) Icon = (o[1]=="Nenhum" and "" or o[1]) UpdateNickDisplay() end})
 TVisual:CreateDropdown({Name="Estilo de Fonte", Options={"GTA / Bold", "Medieval / Clássica", "Futurista", "Pixel / Arcade"}, CurrentOption={"GTA / Bold"}, MultipleOptions=false, Callback=function(o)
-    if VerificarPermissaoDono() then
-        if o[1]:find("GTA") then SelectedFont = Enum.Font.GothamBlack
-        elseif o[1]:find("Medieval") then SelectedFont = Enum.Font.Fantasy
-        elseif o[1]:find("Futurista") then SelectedFont = Enum.Font.SciFi
-        else SelectedFont = Enum.Font.Arcade end
-        UpdateNickDisplay()
-    end
+    if o[1]:find("GTA") then SelectedFont = Enum.Font.GothamBlack
+    elseif o[1]:find("Medieval") then SelectedFont = Enum.Font.Fantasy
+    elseif o[1]:find("Futurista") then SelectedFont = Enum.Font.SciFi
+    else SelectedFont = Enum.Font.Arcade end
+    UpdateNickDisplay()
 end})
-TVisual:CreateColorPicker({Name="Cor do Nick", Color=Color3.fromRGB(255,255,255), Callback=function(v) 
-    if VerificarPermissaoDono() then
-        NickColor = v 
-        UpdateNickDisplay() 
-    end
-end})
-
-TVisual:CreateSection("Ajustes de Tamanho e Altura do Nick")
-TVisual:CreateSlider({Name="Tamanho do Texto", Range={10, 50}, Increment=2, CurrentValue=20, Callback=function(v) 
-    if VerificarPermissaoDono() then
-        NickSize = v 
-        UpdateNickDisplay() 
-    end
-end})
-TVisual:CreateSlider({Name="Altura na Cabeça", Range={1, 6}, Increment=0.2, CurrentValue=2.5, Callback=function(v) 
-    if VerificarPermissaoDono() then
-        NickHeight = v 
-        UpdateNickDisplay() 
-    end
-end})
+TVisual:CreateColorPicker({Name="Cor do Nick", Color=Color3.fromRGB(255,255,255), Callback=function(v) NickColor = v UpdateNickDisplay() end})
+TVisual:CreateSlider({Name="Tamanho do Texto", Range={10, 50}, Increment=2, CurrentValue=20, Callback=function(v) NickSize = v UpdateNickDisplay() end})
+TVisual:CreateSlider({Name="Altura na Cabeça", Range={1, 6}, Increment=0.2, CurrentValue=2.5, Callback=function(v) NickHeight = v UpdateNickDisplay() end})
 
 -- ABA INTERFACE / HUD
 THUD:CreateSection("Customização do Painel")
@@ -422,38 +734,32 @@ THUD:CreateDropdown({
     Options = {"Amethyst", "Red", "Default", "Amber", "Ocean", "Green", "DarkBlue"},
     CurrentOption = {"Amethyst"},
     MultipleOptions = false,
-    Callback = function(o)
-        pcall(function()
-            Window:ChangeTheme(o[1])
-        end)
-    end
+    Callback = function(o) pcall(function() Window:ChangeTheme(o[1]) end) end
 })
+THUD:CreateToggle({Name = "Contador de FPS (Canto Esquerdo)", CurrentValue = false, Callback = function(v) ToggleFPSCounter(v) end})
+THUD:CreateToggle({Name = "Modo Clean (Manter Apenas Pedais e Direção)", CurrentValue = false, Callback = function(v) ToggleCleanHUD(v) end})
 
-THUD:CreateSection("Exibição na Tela")
-THUD:CreateToggle({
-    Name = "Contador de FPS (Canto Esquerdo)",
-    CurrentValue = false,
+-- ABA SISTEMA DE DRIFT
+TDrift:CreateSection("Contador de Drift")
+TDrift:CreateToggle({
+    Name = "Exibir Contador de Drift",
+    CurrentValue = true,
     Callback = function(v)
-        ToggleFPSCounter(v)
-    end
-})
-
-THUD:CreateSection("Limpeza de Tela")
-THUD:CreateToggle({
-    Name = "Modo Clean (Manter Apenas Pedais e Direção)",
-    CurrentValue = false,
-    Callback = function(v)
-        ToggleCleanHUD(v)
+        DriftEnabled = v
+        if not v and DriftGui then DriftGui.Enabled = false end
     end
 })
 
 -- ABA MODIFICAÇÃO DO CARRO
 TCarMod:CreateSection("Pintura do Carro")
 TCarMod:CreateColorPicker({Name="Cor Principal do Veículo", Color=Color3.fromRGB(255,255,255), Callback=function(v) CarColor=v ApplyCarColor() end})
+TCarMod:CreateSlider({Name="Comprimento do Escapamento", Range={0.2, 4}, Increment=0.1, CurrentValue=1, Callback=function(v) ExhaustScaleLen=v ApplyExhaustMod() end})
+TCarMod:CreateSlider({Name="Largura do Escapamento", Range={0.2, 3}, Increment=0.1, CurrentValue=1, Callback=function(v) ExhaustScaleThick=v ApplyExhaustMod() end})
 
-TCarMod:CreateSection("Ajuste do Escapamento")
-TCarMod:CreateSlider({Name="Comprimento (Aumentar / Diminuir)", Range={0.2, 4}, Increment=0.1, CurrentValue=1, Callback=function(v) ExhaustScaleLen=v ApplyExhaustMod() end})
-TCarMod:CreateSlider({Name="Largura / Grossura", Range={0.2, 3}, Increment=0.1, CurrentValue=1, Callback=function(v) ExhaustScaleThick=v ApplyExhaustMod() end})
+-- ABA SHADERS / CÉU
+TShaders:CreateSection("Efeitos de Iluminação e Neblina")
+TShaders:CreateToggle({Name = "Shader Cinza (Nublado + Neblina)", CurrentValue = false, Callback = function(v) ApplyGrayShader(v) end})
+TShaders:CreateToggle({Name = "Shader Roxo (Céu Roxo)", CurrentValue = false, Callback = function(v) ApplyPurpleShader(v) end})
 
 -- ABA ANTI-LAG / FPS
 TAntiLag:CreateSection("Otimizações Pesadas de FPS")
@@ -483,15 +789,19 @@ local SpdE, SpdV = false, 16
 TMov:CreateToggle({Name="Ativar Velocidade", CurrentValue=false, Callback=function(v) SpdE=v end})
 TMov:CreateSlider({Name="Ajustar WalkSpeed", Range={16,300}, Increment=2, CurrentValue=16, Callback=function(v) SpdV=v end})
 
--- ABA INFORMAÇÕES / CRÉDITOS
+-- ABA INFORMAÇÕES
 TCreditos:CreateSection("Informações do Criador")
 TCreditos:CreateParagraph({Title = "DONO", Content = "ONLYOFF"})
 TCreditos:CreateParagraph({Title = "REDES SOCIAIS", Content = "SEGUE NO TIK TOK E MANDE IDEIAS DE OPÇÃO PARA O SCRIPT"})
 
--- LOOPS DE MANUTENÇÃO CONTÍNUA E ATUALIZAÇÃO DO FPS
-RunService.RenderStepped:Connect(function()
+--------------------------------------------------------------------------------
+-- LOOPS CONTINUOS
+--------------------------------------------------------------------------------
+RunService.RenderStepped:Connect(function(dt)
     pcall(function()
-        -- Atualização do FPS
+        UpdateDriftLogic(dt)
+        UpdateCameraLogic()
+
         if FPSDisplayEnabled and FPSLabel then
             FrameCounter = FrameCounter + 1
             local now = tick()
@@ -503,12 +813,10 @@ RunService.RenderStepped:Connect(function()
             end
         end
 
-        -- Manutenção da Gravidade
         if Workspace.Gravity ~= TargetGravity then
             Workspace.Gravity = TargetGravity
         end
 
-        -- Manutenção da Velocidade
         if SpdE and Plr.Character and Plr.Character:FindFirstChildOfClass("Humanoid") then
             Plr.Character:FindFirstChildOfClass("Humanoid").WalkSpeed = SpdV
         end
